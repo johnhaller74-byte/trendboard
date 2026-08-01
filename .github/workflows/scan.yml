@@ -1,0 +1,73 @@
+name: Market scan
+
+on:
+  # 3:07am Eastern-ish. Deliberately off the top of the hour â€” runner contention
+  # is worst at :00 and scheduled jobs get delayed.
+  schedule:
+    - cron: '7 8 * * 2-6'   # Tueâ€“Sat UTC = Monâ€“Fri nights US
+  # Lets you trigger it by hand from the Actions tab (use this for your first test)
+  workflow_dispatch:
+    inputs:
+      scan_limit:
+        description: 'Cap universe size (leave blank for full scan; try 50 for a quick test)'
+        required: false
+        default: ''
+      deep_n:
+        description: 'How many finalists get full history'
+        required: false
+        default: '60'
+
+permissions:
+  contents: write   # needed to commit data/market.json back to the repo
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330   # under the 6h job ceiling
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run market scan
+        env:
+          TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}
+          FINNHUB_KEY: ${{ secrets.FINNHUB_KEY }}
+          SCAN_LIMIT: ${{ github.event.inputs.scan_limit }}
+          DEEP_N: ${{ github.event.inputs.deep_n || '60' }}
+        run: node scripts/scan.mjs
+
+      - name: Commit results
+        run: |
+          git config user.name  "trendboard-bot"
+          git config user.email "actions@github.com"
+          git add data/market.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Market scan $(date -u +%Y-%m-%d)"
+            git push
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f data/market.json ]; then
+            node -e "
+              const d = require('./data/market.json');
+              console.log('### Scan complete');
+              console.log('- Universe: ' + d.stats.universe);
+              console.log('- Candidates: ' + d.stats.candidates);
+              console.log('- Ranked: ' + d.stats.deepScanned);
+              console.log('- Runtime: ' + d.stats.minutes + ' min');
+              console.log('- Errors: ' + d.errors.length);
+              console.log('- Top: ' + d.rankings.slice(0,5).map(r=>r.sym+' '+r.score).join(', '));
+            " >> $GITHUB_STEP_SUMMARY
+          else
+            echo 'Scan produced no output file.' >> $GITHUB_STEP_SUMMARY
+          fi
