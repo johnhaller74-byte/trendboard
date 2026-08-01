@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0F141C">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Trendboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0F141C; --panel:#161D28; --panel2:#1C2532; --line:#273245;
+    --text:#E7EDF5; --muted:#8B98AB; --dim:#5B6778;
+    --brass:#E3B255; --brass-dim:#8a6d38; --up:#43C08B; --down:#E06552;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+  body{background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',system-ui,sans-serif;font-size:15px;padding-bottom:40px;}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  h1,h2,h3{font-family:'Barlow Condensed',sans-serif;letter-spacing:.04em;text-transform:uppercase;}
+  header{padding:14px 16px 10px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,#131A24,#0F141C);position:sticky;top:0;z-index:5;}
+  header h1{font-size:21px;font-weight:700;}
+  header h1 span{color:var(--brass);}
+  .meta{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--muted);margin-top:3px;}
+  .meta .stale{color:var(--down);}
+  .regime{font-family:'IBM Plex Mono',monospace;font-size:12px;margin-top:4px;}
+  section{padding:14px 16px 0;}
+  h2{font-size:15px;color:var(--muted);margin-bottom:8px;}
+  .heat{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;}
+  .tile{border:1px solid var(--line);border-radius:7px;padding:7px 8px;}
+  .tile.top{border-color:var(--brass-dim);}
+  .tile .n{font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-size:11.5px;color:var(--muted);}
+  .tile .v{font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;margin-top:1px;}
+  .filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+  button{font:inherit;font-size:12.5px;background:var(--panel2);color:var(--text);
+    border:1px solid var(--line);padding:6px 12px;border-radius:6px;cursor:pointer;}
+  button.on{border-color:var(--brass);color:var(--brass);}
+  .card{border:1px solid var(--line);border-left-width:3px;border-radius:9px;background:var(--panel);
+    padding:11px 13px;margin-bottom:8px;}
+  .card.ok{border-left-color:var(--up);}
+  .card.warn{border-left-color:var(--brass);}
+  .card.none{border-left-color:var(--line);}
+  .row1{display:flex;align-items:baseline;gap:8px;}
+  .tick{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:16px;}
+  .nm{color:var(--muted);font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+  .sc{font-family:'IBM Plex Mono',monospace;font-size:19px;font-weight:600;color:var(--brass);}
+  .row2{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted);}
+  .row2 b{color:var(--text);font-weight:500;}
+  .chips{margin-top:7px;}
+  .chip{display:inline-block;font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:4px;
+    margin:2px 4px 0 0;border:1px solid var(--line);color:var(--muted);}
+  .chip.ok{color:var(--up);border-color:#2C5A46;}
+  .chip.warn{color:var(--brass);border-color:var(--brass-dim);}
+  .chip.bad{color:var(--down);border-color:#5A342C;}
+  .chip.info{color:#6FA8DC;border-color:#2C425A;}
+  .up{color:var(--up);} .down{color:var(--down);}
+  .note{color:var(--dim);font-size:12px;padding:10px 16px 0;line-height:1.5;}
+  .err{color:var(--down);padding:20px 16px;line-height:1.6;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Trend<span>board</span></h1>
+  <div class="meta" id="meta">Loading…</div>
+  <div class="regime" id="regime"></div>
+</header>
+
+<section id="secWrap" style="display:none;">
+  <h2>Sector heatmap <span class="mono" style="font-size:11px;color:var(--dim);">13-week</span></h2>
+  <div class="heat" id="heat"></div>
+</section>
+
+<section>
+  <h2>Rankings</h2>
+  <div class="filters">
+    <button id="fAll" class="on">All</button>
+    <button id="fBuy">Buy zone only</button>
+    <button id="fFresh">Fresh uptrends</button>
+  </div>
+  <div id="list"></div>
+</section>
+
+<div class="note" id="footNote"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let DATA = null, filter = "all";
+
+function pct(v){
+  if(v === null || v === undefined) return "—";
+  return (v > 0 ? "+" : "") + v.toFixed(1) + "%";
+}
+function cls(v){ return v === null || v === undefined ? "" : v > 0 ? "up" : v < 0 ? "down" : ""; }
+function entryClass(e){
+  if(e === "Buy zone") return "ok";
+  if(e === "Near zone" || e === "No setup" || e === "—") return "none";
+  return "warn";
+}
+
+function chipsFor(r){
+  const c = [];
+  c.push(`<span class="chip ${entryClass(r.entry)==="ok"?"ok":entryClass(r.entry)==="warn"?"warn":""}">${r.entry}</span>`);
+  if(r.stage === "Uptrend" && r.runMonths !== null && r.runMonths <= 3) c.push('<span class="chip ok">Fresh uptrend</span>');
+  if(r.stage === "Topping risk") c.push('<span class="chip bad">Topping risk</span>');
+  if(r.stage === "Uptrend" && r.runMonths >= 15 && (r.runGain ?? 0) >= 100) c.push('<span class="chip warn">Late-stage run</span>');
+  if(r.insiders >= 2) c.push(`<span class="chip ok">Insider buys (${r.insiders})</span>`);
+  if(r.surprise !== null && r.surprise > 0) c.push('<span class="chip ok">EPS beat</span>');
+  if(r.nearHigh) c.push('<span class="chip warn">Near high</span>');
+  if(r.ext !== null && r.ext > 15) c.push('<span class="chip bad">Extended</span>');
+  return c.join("");
+}
+
+function render(){
+  const d = DATA;
+  // freshness
+  const age = (Date.now() - Date.parse(d.generated)) / 3600000;
+  const when = new Date(d.generated).toLocaleString(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
+  const stale = age > 40;
+  $("meta").innerHTML = `Data as of ${when}` +
+    (stale ? ` <span class="stale">· ${Math.round(age/24)}d old — scan may have stopped running</span>` : "");
+  if(d.regime && d.regime.uptrend !== null){
+    $("regime").innerHTML = d.regime.uptrend
+      ? `<span class="up">● SPY above its 200-day — uptrend</span>`
+      : `<span class="down">● SPY below its 200-day — caution, all scores discounted</span>`;
+  }
+  // sectors
+  if(d.sectors && d.sectors.length){
+    $("secWrap").style.display = "block";
+    $("heat").innerHTML = d.sectors.map(s=>{
+      let bg = "transparent";
+      if(s.m3 !== null){
+        const a = Math.min(.5, Math.abs(s.m3)/15*.5);
+        bg = s.m3 >= 0 ? `rgba(67,192,139,${a.toFixed(2)})` : `rgba(224,101,82,${a.toFixed(2)})`;
+      }
+      return `<div class="tile ${s.rank<=3?"top":""}" style="background:${bg}">
+        <div class="n">${s.name}</div><div class="v ${cls(s.m3)}">${pct(s.m3)}</div></div>`;
+    }).join("");
+  }
+  // rankings
+  let rows = d.rankings || [];
+  if(filter === "buy") rows = rows.filter(r=>r.entry === "Buy zone");
+  if(filter === "fresh") rows = rows.filter(r=>r.stage === "Uptrend" && r.runMonths !== null && r.runMonths <= 3);
+  $("list").innerHTML = rows.length ? rows.map(r=>`
+    <div class="card ${entryClass(r.entry)}">
+      <div class="row1">
+        <span class="tick">${r.sym}</span>
+        <span class="nm">${r.name || ""}</span>
+        <span class="sc">${r.score}</span>
+      </div>
+      <div class="row2">
+        <span>$<b>${r.price}</b></span>
+        <span>1M <b class="${cls(r.m1)}">${pct(r.m1)}</b></span>
+        <span>6M <b class="${cls(r.r26)}">${pct(r.r26)}</b></span>
+        <span>1Y <b class="${cls(r.r52)}">${pct(r.r52)}</b></span>
+        <span>$${r.dv}M/d</span>
+      </div>
+      <div class="chips">${chipsFor(r)}</div>
+    </div>`).join("")
+    : `<div class="note">Nothing matches that filter today. That's a normal answer — no setup is a valid reading.</div>`;
+  $("footNote").textContent =
+    `Scanned ${d.stats.universe.toLocaleString()} symbols → ${d.stats.candidates.toLocaleString()} candidates → ${d.stats.deepScanned} fully scored in ${d.stats.minutes} min.` +
+    (d.errors && d.errors.length ? ` ${d.errors.length} symbols errored.` : "") +
+    ` Research tool for personal use — not investment advice.`;
+}
+
+function setFilter(f){
+  filter = f;
+  for(const [id,v] of [["fAll","all"],["fBuy","buy"],["fFresh","fresh"]])
+    $(id).classList.toggle("on", filter === v);
+  render();
+}
+$("fAll").onclick = ()=>setFilter("all");
+$("fBuy").onclick = ()=>setFilter("buy");
+$("fFresh").onclick = ()=>setFilter("fresh");
+
+fetch("data/market.json?t=" + Date.now())
+  .then(r => { if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+  .then(j => { DATA = j; render(); })
+  .catch(e => {
+    $("meta").textContent = "";
+    document.body.insertAdjacentHTML("beforeend",
+      `<div class="err"><b>No data file yet.</b><br>Run the "Market scan" workflow from the Actions tab —
+       once it finishes and commits <span class="mono">data/market.json</span>, this page will fill in.
+       <br><br><span class="mono" style="font-size:11px;">(${e.message})</span></div>`);
+  });
+</script>
+</body>
+</html>
