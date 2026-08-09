@@ -8,7 +8,8 @@
  *   TWELVEDATA_KEY  (required) daily history + symbol directory
  *   FINNHUB_KEY     (required) wide metric scan, insiders, earnings
  *   SCAN_LIMIT      (optional) cap universe size — use 50 for a fast first test
- *   DEEP_N          (optional) how many finalists get full history (default 60)
+ *   DEEP_N          (optional) how many momentum leaders get full history (default 60)
+ *   EMERGING_N      (optional) how many Stage 1->2 candidates get full history (default 40)
  */
 
 import { writeFile, mkdir } from "node:fs/promises";
@@ -17,6 +18,7 @@ const TD_KEY = process.env.TWELVEDATA_KEY;
 const FH_KEY = process.env.FINNHUB_KEY;
 const SCAN_LIMIT = process.env.SCAN_LIMIT ? +process.env.SCAN_LIMIT : 0;
 const DEEP_N = process.env.DEEP_N ? +process.env.DEEP_N : 60;
+const EMERGING_N = process.env.EMERGING_N ? +process.env.EMERGING_N : 40;
 
 if (!TD_KEY || !FH_KEY) {
   console.error("Missing TWELVEDATA_KEY or FINNHUB_KEY environment variables.");
@@ -159,6 +161,85 @@ function trendScore(c, v, spyC, bonuses = {}) {
            thrust: th ? +th.d.toFixed(2) : null };
 }
 
+/** Stage 1 -> 2 transition score. Mirrors emergingScore() in the browser app. */
+function emergingScore(c, v, spyC) {
+  if (!c || c.length < 230) return null;
+  const i = c.length - 1, px = c[i];
+  const ma50 = sma(c,50,i), ma150 = sma(c,150,i), ma200 = sma(c,200,i);
+  const ma50a = sma(c,50,i-21), ma200a = sma(c,200,i-21);
+  const ma50b = sma(c,50,i-63), ma200b = sma(c,200,i-63);
+  const ma200c = sma(c,200,i-42);
+  if ([ma50,ma150,ma200,ma50a,ma200a,ma50b,ma200b,ma200c].some(x => x === null)) return null;
+
+  const gap  = (ma50/ma200 - 1) * 100;
+  const gapA = (ma50a/ma200a - 1) * 100;
+  const gapB = (ma50b/ma200b - 1) * 100;
+  const close21 = gap - gapA, close63 = gap - gapB;
+  const slopeNow  = (ma200/ma200a - 1) * 100;
+  const slopePrev = (ma200a/ma200c - 1) * 100;
+
+  // Exclude only ESTABLISHED uptrends — those belong in the leaders list.
+  if (slopeNow > 0.15 && gap > 8) return null;
+
+  const r21 = ret(c,21), r63 = ret(c,63);
+  const spy21 = spyC && spyC.length > 21  ? (spyC[spyC.length-1]/spyC[spyC.length-22]  - 1)*100 : null;
+  const spy63 = spyC && spyC.length > 63  ? (spyC[spyC.length-1]/spyC[spyC.length-64]  - 1)*100 : null;
+  const yr = c.slice(Math.max(0, c.length-252));
+  const lo52 = Math.min(...yr), hi52 = Math.max(...yr);
+  const offLow = (px/lo52 - 1)*100, fromHigh = (px/hi52 - 1)*100;
+  const acc = accumDays(c, v);
+  let udv = null;
+  if (v && v.length === c.length) {
+    const n = Math.min(50, c.length-1);
+    if (n >= 25) { let up=0, dn=0;
+      for (let k=c.length-n;k<c.length;k++){ if(c[k]>c[k-1]) up+=v[k]; else if(c[k]<c[k-1]) dn+=v[k]; }
+      udv = dn>0 ? up/dn : (up>0?99:null); }
+  }
+  const vol = volAnnualized(c, 63);
+
+  let sc = 0;
+  sc += scale(close63, -2, 12, 20);
+  sc += scale(close21, -1, 5, 10);
+  sc += scale(slopeNow - slopePrev, -0.4, 1.2, 8);
+  if (slopeNow > -0.1) sc += 7;
+  sc += spy63 === null ? 0 : scale((r63 ?? 0) - spy63, -5, 25, 12);
+  sc += spy21 === null ? 0 : scale((r21 ?? 0) - spy21, -3, 12, 8);
+  if (px > ma50) sc += 6;
+  if (px > ma150) sc += 4;
+  sc += offLow >= 15 ? scale(Math.min(offLow, 70), 15, 45, 5) : 0;
+  sc += acc === null ? 0 : scale(acc, -3, 8, 12);
+  sc += udv === null ? 0 : scale(udv, 0.9, 1.5, 8);
+
+  let pen = 0;
+  if (px < ma200*0.85 && slopeNow < -0.3) pen += 10;
+  if (c.length > 11) {
+    let worst = 0;
+    for (let k=c.length-10;k<c.length;k++){ const d=(c[k]/c[k-1]-1)*100; if(d<worst) worst=d; }
+    if (worst <= -7) pen += 8;
+  }
+  if (offLow < 12) pen += 6;
+  sc = Math.max(0, Math.min(100, sc - pen));
+
+  let regimeOk = true;
+  if (spyC && spyC.length >= 200) {
+    const m = sma(spyC, 200, spyC.length-1);
+    if (m !== null && spyC[spyC.length-1] < m) { sc *= 0.6; regimeOk = false; }
+  }
+
+  let stage;
+  if (px < ma50) stage = "Below 50D";
+  else if (gap <= -8) stage = "Base building";
+  else if (gap <= -1) stage = "Closing gap";
+  else if (gap <= 2) stage = "At crossover";
+  else stage = "Fresh cross";
+
+  return { score: Math.round(sc), stage, gap: +gap.toFixed(1), close63: +close63.toFixed(1),
+           close21: +close21.toFixed(1), r21: r21===null?null:+r21.toFixed(1),
+           r63: r63===null?null:+r63.toFixed(1), acc, offLow: +offLow.toFixed(0),
+           fromHigh: +fromHigh.toFixed(1), vol: vol===null?null:+vol.toFixed(0), regimeOk,
+           confirmed: acc !== null && acc >= 3 && slopeNow > -0.1 && px > ma50 };
+}
+
 function trendPhase(c) {
   if (!c || c.length < 210) return null;
   const i = c.length - 1, px = c[i];
@@ -260,15 +341,24 @@ async function main() {
       const j = await fh(`stock/metric?symbol=${encodeURIComponent(u.s)}&metric=all`);
       const m = j && j.metric;
       if (!m) continue;
-      const r26 = m["26WeekPriceReturnDaily"], r52 = m["52WeekPriceReturnDaily"];
-      if (r26 === null || r26 === undefined || r26 <= 0) continue;
+      const r13 = m["13WeekPriceReturnDaily"], r26 = m["26WeekPriceReturnDaily"], r52 = m["52WeekPriceReturnDaily"];
+      const num26 = (r26 === null || r26 === undefined) ? null : r26;
+      const num13 = (r13 === null || r13 === undefined) ? null : r13;
+      // Two pools. Leaders: already trending. Emerging: recent strength on a weak long-term base —
+      // 13-week positive, 52-week not yet run away, and 13w outpacing 26w (the inflection signature).
+      const isLeader   = num26 !== null && num26 > 0;
+      const isEmerging = num13 !== null && num13 > 3 && num26 !== null && num13 > num26 &&
+                         (r52 === null || r52 === undefined || r52 < 30);
+      if (!isLeader && !isEmerging) continue;
       const volRaw = m["3MonthAverageTradingVolume"] ?? m["10DayAverageTradingVolume"] ?? 0;
       const volM = volRaw > 1e5 ? volRaw / 1e6 : volRaw;
-      cand.push({ sym: u.s, name: u.n, r13: m["13WeekPriceReturnDaily"] ?? null, r26,
-                  r52: r52 ?? null, hi52: m["52WeekHigh"] ?? null, volM, beta: m["beta"] ?? null });
+      cand.push({ sym: u.s, name: u.n, r13: num13, r26: num26,
+                  r52: r52 ?? null, hi52: m["52WeekHigh"] ?? null, volM, beta: m["beta"] ?? null,
+                  isLeader, isEmerging });
     } catch (e) { /* skip individual failures */ }
   }
-  log(`Stage 1 complete: ${cand.length} candidates with positive 26w return`);
+  log(`Stage 1 complete: ${cand.length} candidates ` +
+      `(${cand.filter(c=>c.isLeader).length} leaders, ${cand.filter(c=>c.isEmerging).length} emerging)`);
 
   // rough rank, then take the deep pool
   for (const c of cand) {
@@ -280,8 +370,16 @@ async function main() {
       (c.beta === null || !isFinite(c.beta) ? 5 : scale(2.0 - c.beta, 0, 1.2, 10))
     );
   }
-  cand.sort((a, b) => b.s1 - a.s1);
-  const pool = cand.slice(0, Math.min(DEEP_N * 3, cand.length));
+  for (const c of cand) {
+    c.s1e = Math.round((c.r13 ?? -99) * 0.6 + ((c.r13 ?? 0) - (c.r26 ?? 0)) * 0.4);
+  }
+  const leaderPool = cand.filter(c => c.isLeader).sort((a, b) => b.s1 - a.s1)
+                         .slice(0, Math.min(DEEP_N * 3, cand.length));
+  const emergePool = cand.filter(c => c.isEmerging).sort((a, b) => b.s1e - a.s1e)
+                         .slice(0, Math.min(EMERGING_N * 3, cand.length));
+  const seen = new Set();
+  const pool = [];
+  for (const c of [...leaderPool, ...emergePool]) { if (!seen.has(c.sym)) { seen.add(c.sym); pool.push(c); } }
 
   // 4. Quotes on the pool (Finnhub, fast) → apply price & liquidity floors
   log(`Price-checking ${pool.length} finalists…`);
@@ -296,17 +394,22 @@ async function main() {
       finalists.push({ ...c, price: px, dv: Math.round(dv) });
     } catch (e) { /* skip */ }
   }
-  finalists.sort((a, b) => b.s1 - a.s1);
-  const deep = finalists.slice(0, DEEP_N);
-  log(`${finalists.length} passed filters; deep-scanning top ${deep.length}`);
+  const leaders = finalists.filter(c => c.isLeader).sort((a, b) => b.s1 - a.s1).slice(0, DEEP_N);
+  const emergers = finalists.filter(c => c.isEmerging).sort((a, b) => b.s1e - a.s1e).slice(0, EMERGING_N);
+  const dseen = new Set();
+  const deep = [];
+  for (const c of [...leaders, ...emergers]) { if (!dseen.has(c.sym)) { dseen.add(c.sym); deep.push(c); } }
+  log(`${finalists.length} passed filters; deep-scanning ${deep.length} ` +
+      `(${leaders.length} leaders + ${emergers.length} emerging)`);
 
   // 5. Stage 2 — full history + score
-  const rankings = [];
+  const rankings = [], emerging = [];
   for (const c of deep) {
     try {
       const h = await history(c.sym);
       let bonuses = {}, earnDays = null, surprise = null, insiders = 0;
-      try {
+      if (!c.isLeader) { /* emerging-only: skip insider/earnings/profile lookups */ }
+      else try {
         const ins = await fh(`stock/insider-transactions?symbol=${encodeURIComponent(c.sym)}`);
         const cutoff = Date.now() - 90 * 86400000;
         const buyers = new Set();
@@ -338,8 +441,21 @@ async function main() {
         bonuses.sector = idx === 0 ? 5 : (idx === 1 || idx === 2) ? 3 : 0;
       } catch (e) {}
 
+      const em = emergingScore(h.closes, h.volumes, spyC);
+      if (em && c.isEmerging) {
+        emerging.push({
+          sym: c.sym, name: c.name, price: +c.price.toFixed(2), dv: c.dv,
+          score: em.score, stage: em.stage, gap: em.gap, close63: em.close63, close21: em.close21,
+          r13: c.r13 === null ? null : +c.r13.toFixed(1), r26: c.r26 === null ? null : +c.r26.toFixed(1),
+          r52: c.r52 === null ? null : +c.r52.toFixed(1), r21: em.r21, r63: em.r63,
+          acc: em.acc, offLow: em.offLow, fromHigh: em.fromHigh, vol: em.vol,
+          confirmed: em.confirmed, sector: c.sector || null
+        });
+        log(`  ${c.sym}: emerging ${em.score} · ${em.stage}${em.confirmed ? " · volume confirmed" : ""}`);
+      }
       const sc = trendScore(h.closes, h.volumes, spyC, bonuses);
       if (!sc) continue;
+      if (!c.isLeader) continue;   // emerging-only names don't enter the leaders list
       const ph = trendPhase(h.closes);
       rankings.push({
         sym: c.sym, name: c.name, price: +c.price.toFixed(2), dv: c.dv,
@@ -359,14 +475,16 @@ async function main() {
     }
   }
   rankings.sort((a, b) => b.score - a.score);
+  emerging.sort((a, b) => b.score - a.score);
   out.rankings = rankings;
+  out.emerging = emerging;
   out.stats = { universe: univ.length, candidates: cand.length, passedFilters: finalists.length,
-                deepScanned: rankings.length, minutes: +((Date.now() - started) / 60000).toFixed(1) };
+                deepScanned: rankings.length, emergingScanned: emerging.length,
+                minutes: +((Date.now() - started) / 60000).toFixed(1) };
 
   await mkdir("data", { recursive: true });
   await writeFile("data/market.json", JSON.stringify(out, null, 1));
-  log(`Done in ${out.stats.minutes} min — ${rankings.length} ranked, ${out.errors.length} errors`);
+  log(`Done in ${out.stats.minutes} min — ${rankings.length} ranked, ${emerging.length} emerging, ${out.errors.length} errors`);
 }
 
 main().catch(e => { console.error("FATAL:", e); process.exit(1); });
-                     
