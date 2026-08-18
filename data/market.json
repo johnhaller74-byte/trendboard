@@ -1,5 +1,5 @@
 {
- "generated": "2026-08-18T07:37:40.184Z",
+ "generated": "2026-08-18T09:52:32.425Z",
  "errors": [],
  "regime": {
   "spy": 772.67,
@@ -2611,10 +2611,10 @@
  ],
  "stats": {
   "universe": 2089,
-  "candidates": 1214,
+  "candidates": 1215,
   "passedFilters": 195,
   "deepScanned": 87,
   "emergingScanned": 31,
-  "minutes": 76.5
+  "minutes": 60.6
  }
 }
